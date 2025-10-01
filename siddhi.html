@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>K-Map Solver — Responsive</title>
+<style>
+  :root{
+    --bg:#f6f9fc; --card:#ffffff; --muted:#6b7280; --accent:#0b74ff; --ok:#16a34a;
+    --danger:#ef4444; --glass:rgba(15,23,42,0.02);
+    --radius:12px; --gap:14px; --shadow:0 6px 20px rgba(16,24,40,0.06);
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:linear-gradient(180deg,#eef2ff 0%, #f8fafc 100%);color:#0f172a;padding:20px;display:flex;justify-content:center}
+  .app{width:1100px;max-width:96%;display:flex;flex-direction:column;gap:18px}
+  header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+  header h1{margin:0;font-size:20px}
+  header p{margin:6px 0 0;color:var(--muted);font-size:13px}
+  .card{background:var(--card);border-radius:var(--radius);padding:16px;box-shadow:var(--shadow)}
+  .controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  select,input[type="text"],button{font-size:15px;padding:10px 12px;border-radius:8px;border:1px solid #e6eef8}
+  button{background:var(--accent);color:white;border-color:var(--accent);cursor:pointer}
+  button.ghost{background:white;color:var(--accent);border:1px solid #c7d2fe}
+  .layout{display:grid;grid-template-columns:520px 1fr;gap:18px}
+  .kmap{padding:10px}
+  .grid{display:grid;gap:8px;justify-content:center}
+  .cell{
+    width:72px;height:54px;border-radius:8px;background:var(--glass);display:flex;flex-direction:column;align-items:center;justify-content:center;
+    border:1px solid rgba(15,23,42,0.06);cursor:pointer;user-select:none;
+  }
+  .cell .idx{font-size:12px;color:var(--muted);margin-bottom:6px}
+  .cell .val{font-weight:700;font-size:18px}
+  .cell.zero{background:#fff;color:var(--muted)}
+  .cell.one{background:#e6f4ff;color:var(--accent);border-color:#bfdbfe}
+  .cell.grouped{box-shadow:0 0 0 3px rgba(11,116,255,0.08) inset}
+  .right-col{display:flex;flex-direction:column;gap:12px}
+  .result{font-weight:700;padding:12px;border-radius:8px;background:#fff;border:1px solid #e6eef8;min-height:48px}
+  .small{color:var(--muted);font-size:13px}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  table{width:100%;border-collapse:collapse;background:white;border-radius:8px;overflow:hidden}
+  th,td{padding:8px;text-align:center;border-bottom:1px solid #f3f4f6;font-size:13px}
+  .actions{display:flex;gap:8px;flex-wrap:wrap}
+  .footnote{color:var(--muted);font-size:13px;margin-top:6px}
+  @media(max-width:980px){ .layout{grid-template-columns:1fr; } .cell{width:56px;height:46px} }
+</style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div>
+        <h1>Karnaugh Map Solver — Responsive</h1>
+        <p>Choose variables, toggle each cell (0/1). Click <strong>Simplify (SOP)</strong> or <strong>Simplify (POS)</strong>.</p>
+      </div>
+      <div class="small">
+        <div>Select variables, then click cells to toggle values.</div>
+      </div>
+    </header>
+
+    <div class="card controls">
+      <label>Variables:
+        <select id="nVars"><option value="2">2</option><option value="3" selected>3</option><option value="4">4</option></select>
+      </label>
+
+      <label>Include don't-cares:
+        <select id="allowDc"><option value="no" selected>No</option><option value="yes">Yes (toggle cell to X)</option></select>
+      </label>
+
+      <div class="actions" style="margin-left:auto">
+        <button id="sopBtn">Simplify (SOP)</button>
+        <button id="posBtn" style="background:#10b981">Simplify (POS)</button>
+        <button id="truthBtn" class="ghost">Truth Table</button>
+        <button id="clearBtn" class="ghost">Clear</button>
+      </div>
+    </div>
+
+    <div class="layout">
+      <!-- LEFT: KMAP -->
+      <div class="card kmap">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div style="font-weight:700">K-map</div>
+          <div class="small">Click cell to toggle: 0 → 1 → X (if don't-cares enabled) → 0</div>
+        </div>
+        <div id="gridContainer" class="grid" aria-hidden="false"></div>
+        <div class="footnote small">Cells show minterm index (decimal).</div>
+      </div>
+
+      <!-- RIGHT: Result / details -->
+      <div class="right-col">
+        <div class="card">
+          <div style="font-weight:700;margin-bottom:8px">Result</div>
+          <div id="resultSOP" class="result">(press Simplify)</div>
+          <div id="resultPOS" class="result" style="display:none"></div>
+          <div class="small" id="groupsInfo"></div>
+        </div>
+
+        <div class="card">
+          <div style="font-weight:700;margin-bottom:8px">Original expression</div>
+          <div id="originalExp" class="small">—</div>
+        </div>
+
+        <div class="card" id="truthCard" style="display:none">
+          <div style="font-weight:700;margin-bottom:8px">Truth Table</div>
+          <div id="truthTableWrap"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* ---------- Core K-map logic (works for 2,3,4 variables) ---------- */
+
+/* Gray code ordering helper */
+function grayOrder(n) {
+  const arr = []; const size = 1<<n;
+  for (let i=0;i<size;i++) arr.push(i ^ (i>>1));
+  return arr;
+}
+
+/* Build kmap layout depending on variable count */
+function buildMap(nVars) {
+  let rows=1, cols=1, rowBits=0, colBits=0;
+  if (nVars===2) { rows=1; cols=4; rowBits=0; colBits=2; }
+  else if (nVars===3) { rows=2; cols=4; rowBits=1; colBits=2; }
+  else { rows=4; cols=4; rowBits=2; colBits=2; }
+  const rowGray = grayOrder(rowBits), colGray = grayOrder(colBits);
+  const idxToMin = new Array(rows*cols);
+  for (let r=0;r<rows;r++){
+    for (let c=0;c<cols;c++){
+      const rv = rowBits===0 ? 0 : rowGray[r];
+      const cv = colBits===0 ? 0 : colGray[c];
+      idxToMin[r*cols + c] = (rv << colBits) | cv;
+    }
+  }
+  return {rows,cols,rowBits,colBits,idxToMin};
+}
+
+/* Generate all rectangular power-of-two groups (wrap-around) */
+function generateGroups(rows, cols) {
+  const groups = [];
+  for (let gh=1; gh<=rows; gh<<=1) {
+    if (rows % gh) continue;
+    for (let gw=1; gw<=cols; gw<<=1) {
+      if (cols % gw) continue;
+      for (let r=0;r<rows;r++){
+        for (let c=0;c<cols;c++){
+          const cells=[];
+          for (let dr=0; dr<gh; dr++) for (let dc=0; dc<gw; dc++){
+            const rr=(r+dr)%rows, cc=(c+dc)%cols;
+            cells.push(rr*cols + cc);
+          }
+          cells.sort((a,b)=>a-b);
+          groups.push({cells, size:cells.length, key:cells.join(',')});
+        }
+      }
+    }
+  }
+  // unique & sort by size desc
+  const seen=new Set(); const uniq=[];
+  for (const g of groups) if (!seen.has(g.key)){ seen.add(g.key); uniq.push(g); }
+  uniq.sort((a,b)=>b.size - a.size);
+  return uniq;
+}
+
+/* Greedy selection: prefer bigger groups covering uncovered 1s (or 0s when used for POS) */
+function selectGroups(groups, isTarget, isDontCare) {
+  const valid = groups.filter(g => g.cells.some(c => isTarget[c] || isDontCare[c]));
+  valid.sort((a,b)=>b.size - a.size);
+  const covered = Array(isTarget.length).fill(false);
+  const chosen = [];
+  for (const g of valid) {
+    if (g.cells.some(c => isTarget[c] && !covered[c])) {
+      chosen.push(g);
+      for (const c of g.cells) if (isTarget[c]) covered[c] = true;
+    }
+  }
+  // cover remaining uncovered target cells (smallest group covering each)
+  for (let i=0;i<isTarget.length;i++){
+    if (isTarget[i] && !covered[i]) {
+      let pick = null;
+      for (const g of valid) if (g.cells.includes(i)) {
+        if (!pick || g.size < pick.size) pick = g;
+      }
+      if (pick) { chosen.push(pick); for (const c of pick.cells) if (isTarget[c]) covered[c]=true; }
+    }
+  }
+  // unique chosen by key
+  const map=new Set(), out=[];
+  for (const g of chosen) if (!map.has(g.key)) { map.add(g.key); out.push(g); }
+  return out;
+}
+
+/* Convert group cells to product term for SOP (A'B etc.)
+   Mapping: A is MSB (highest-order bit). bits index 0=LSB. */
+function cellsToProduct(cells, idxToMin, nVars) {
+  const vals = cells.map(c => idxToMin[c]);
+  const constBit = Array(nVars).fill(null);
+  for (let bit=0; bit<nVars; bit++) {
+    const b0 = (vals[0]>>bit)&1;
+    let same=true;
+    for (let i=1;i<vals.length;i++) if (((vals[i]>>bit)&1) !== b0){ same=false; break; }
+    if (same) constBit[bit] = b0;
+  }
+  // Build term: variable A maps to bit position nVars-1
+  const parts=[];
+  for (let i=0;i<nVars;i++){
+    const bp = nVars - 1 - i;
+    const v = constBit[bp];
+    if (v === null) continue;
+    let name = String.fromCharCode(65 + i);
+    if (v === 0) name += "'";
+    parts.push(name);
+  }
+  return parts.length ? parts.join('') : '1';
+}
+
+/* Convert group cells to sum term for POS.
+   For POS (grouping zeros), if variable bit is 0 across group then sum includes variable (not complemented).
+   e.g., for 2-vars A=0,B=0 -> sum term (A + B). */
+function cellsToSum(cells, idxToMin, nVars) {
+  const vals = cells.map(c => idxToMin[c]);
+  const constBit = Array(nVars).fill(null);
+  for (let bit=0; bit<nVars; bit++){
+    const b0 = (vals[0]>>bit)&1;
+    let same=true;
+    for (let i=1;i<vals.length;i++) if (((vals[i]>>bit)&1) !== b0){ same=false; break; }
+    if (same) constBit[bit] = b0;
+  }
+  const parts=[];
+  for (let i=0;i<nVars;i++){
+    const bp = nVars - 1 - i;
+    const v = constBit[bp];
+    if (v === null) continue;
+    // For POS: bit 0 -> variable appears (A), bit 1 -> variable appears complemented (A')
+    let name = String.fromCharCode(65 + i);
+    if (v === 1) name += "'";
+    parts.push(name);
+  }
+  return parts.length ? '(' + parts.join(' + ') + ')' : '(1)';
+}
+
+/* ---------- UI & app glue ---------- */
+
+const nVarsEl = document.getElementById('nVars');
+const allowDcEl = document.getElementById('allowDc');
+const gridContainer = document.getElementById('gridContainer');
+const sopBtn = document.getElementById('sopBtn');
+const posBtn = document.getElementById('posBtn');
+const clearBtn = document.getElementById('clearBtn');
+const truthBtn = document.getElementById('truthBtn');
+const resultSOP = document.getElementById('resultSOP');
+const resultPOS = document.getElementById('resultPOS');
+const originalExp = document.getElementById('originalExp');
+const groupsInfo = document.getElementById('groupsInfo');
+const truthCard = document.getElementById('truthCard');
+const truthTableWrap = document.getElementById('truthTableWrap');
+
+let state = {
+  nVars: 3,
+  rows: 2, cols: 4,
+  idxToMin: [],
+  cells: [] // 0,1,2 where 2 = don't-care (only if enabled)
+};
+
+function initUI() {
+  state.nVars = parseInt(nVarsEl.value, 10);
+  const map = buildMap(state.nVars);
+  state.rows = map.rows; state.cols = map.cols; state.idxToMin = map.idxToMin;
+  state.cells = new Array(state.rows * state.cols).fill(0);
+  renderGrid();
+  clearResults();
+}
+
+/* Render grid as clickable cells showing index and value */
+function renderGrid() {
+  gridContainer.innerHTML = '';
+  gridContainer.style.gridTemplateColumns = `repeat(${state.cols}, auto)`;
+  for (let i=0;i<state.rows*state.cols;i++){
+    const cell = document.createElement('div');
+    cell.className = 'cell zero';
+    cell.dataset.i = i;
+    const idx = document.createElement('div'); idx.className='idx'; idx.textContent = state.idxToMin[i];
+    const val = document.createElement('div'); val.className='val'; val.textContent='0';
+    cell.appendChild(idx); cell.appendChild(val);
+    cell.addEventListener('click', () => {
+      // cycle: 0 -> 1 -> X (if allowed) -> 0
+      const allowDc = allowDcEl.value === 'yes';
+      if (state.cells[i] === 0) state.cells[i] = 1;
+      else if (state.cells[i] === 1) state.cells[i] = (allowDc ? 2 : 0);
+      else state.cells[i] = 0;
+      updateCellDisplay(i, cell);
+    });
+    gridContainer.appendChild(cell);
+  }
+}
+
+/* Update one cell's class/text from state */
+function updateCellDisplay(i, el) {
+  const st = state.cells[i];
+  el.classList.remove('zero','one','x','grouped');
+  if (st === 0) { el.classList.add('zero'); el.querySelector('.val').textContent = '0'; }
+  else if (st === 1) { el.classList.add('one'); el.querySelector('.val').textContent = '1'; }
+  else { el.classList.add('x'); el.querySelector('.val').textContent = 'X'; }
+}
+
+/* Clear result panels */
+function clearResults() {
+  resultSOP.textContent = '(press Simplify)';
+  resultPOS.style.display = 'none';
+  resultPOS.textContent = '';
+  originalExp.textContent = '—';
+  groupsInfo.textContent = '';
+  truthCard.style.display = 'none';
+  // remove grouping visuals
+  gridContainer.querySelectorAll('.cell').forEach(el => el.classList.remove('grouped'));
+}
+
+/* Build truth table as HTML table */
+function renderTruthTable() {
+  const n = state.nVars;
+  const rows = 1<<n;
+  let html = '<table><thead><tr>';
+  for (let i=0;i<n;i++) html += `<th>${String.fromCharCode(65+i)}</th>`;
+  html += '<th>Output</th></tr></thead><tbody>';
+  // For mapping index to minterm order, idxToMin gives decimal assignments of cell positions.
+  // But truth table wants listing by natural binary order 0..(2^n-1) with output.
+  // We must find for each minterm (0..2^n-1) whether present (1), don't-care (X), or 0.
+  const output = new Array(1<<n).fill(0);
+  for (let i=0;i<state.rows*state.cols;i++){
+    const m = state.idxToMin[i];
+    const v = state.cells[i];
+    output[m] = v; // 0/1/2
+  }
+  for (let m=0;m<rows;m++){
+    const bits = [];
+    for (let b=n-1;b>=0;b--) bits.push(((m>>b)&1));
+    html += '<tr>';
+    for (const bit of bits) html += `<td>${bit}</td>`;
+    const val = output[m] === 2 ? 'X' : output[m];
+    html += `<td>${val}</td></tr>`;
+  }
+  html += '</tbody></table>';
+  truthTableWrap.innerHTML = html;
+  truthCard.style.display = 'block';
+}
+
+/* Simplify for SOP (group 1s) */
+function simplifySOP() {
+  clearResults();
+  const rows = state.rows, cols = state.cols;
+  const nCells = rows*cols;
+  const isMin = new Array(nCells).fill(0);
+  const isDc = new Array(nCells).fill(0);
+  for (let i=0;i<nCells;i++){
+    if (state.cells[i] === 1) isMin[i] = 1;
+    if (state.cells[i] === 2) isDc[i] = 1;
+  }
+  if (isMin.every(x=>x===0)) {
+    resultSOP.textContent = 'Function = 0 (no minterms)';
+    originalExp.textContent = 'F = Σ( )';
+    return;
+  }
+  const groups = generateGroups(rows,cols);
+  const chosen = selectGroups(groups, isMin, isDc);
+  // group highlights
+  gridContainer.querySelectorAll('.cell').forEach(el => el.classList.remove('grouped'));
+  chosen.forEach((g, idx) => g.cells.forEach(c => {
+    const el = gridContainer.querySelector(`.cell[data-i='${c}']`); if (el) el.classList.add('grouped');
+  }));
+  // Convert to product terms (SOP)
+  const terms = chosen.map(g => cellsToProduct(g.cells, state.idxToMin, state.nVars));
+  const uniq = [...new Set(terms)];
+  resultSOP.textContent = uniq.join(' + ');
+  // original expression (sum of minterms)
+  const minterms = [];
+  for (let i=0;i<nCells;i++) if (isMin[i]) minterms.push(state.idxToMin[i]);
+  originalExp.textContent = `F = Σ(${minterms.join(',')})`;
+}
+
+/* Simplify for POS (group 0s => maxterms) */
+function simplifyPOS() {
+  clearResults();
+  const rows = state.rows, cols = state.cols;
+  const nCells = rows*cols;
+  const isZero = new Array(nCells).fill(0);
+  const isDc = new Array(nCells).fill(0);
+  for (let i=0;i<nCells;i++){
+    if (state.cells[i] === 0) isZero[i] = 1;
+    if (state.cells[i] === 2) isDc[i] = 1;
+  }
+  if (isZero.every(x=>x===0)) {
+    resultSOP.textContent = 'Function = 1 (no zeros)';
+    originalExp.textContent = 'F = Π( )';
+    return;
+  }
+  const groups = generateGroups(rows,cols);
+  const chosen = selectGroups(groups, isZero, isDc);
+  // highlight groups
+  gridContainer.querySelectorAll('.cell').forEach(el => el.classList.remove('grouped'));
+  chosen.forEach((g, idx) => g.cells.forEach(c => {
+    const el = gridContainer.querySelector(`.cell[data-i='${c}']`); if (el) el.classList.add('grouped');
+  }));
+  // Convert groups to sum terms and join as product
+  const sums = chosen.map(g => cellsToSum(g.cells, state.idxToMin, state.nVars));
+  const uniq = [...new Set(sums)];
+  resultPOS.style.display = 'block';
+  resultPOS.textContent = uniq.join(' ');
+  resultSOP.textContent = '(POS shown below)';
+  // original product (maxterms: all m where output=0)
+  const zeros = [];
+  for (let i=0;i<nCells;i++) if (isZero[i]) zeros.push(state.idxToMin[i]);
+  originalExp.textContent = `F = Π(${zeros.join(',')})`;
+}
+
+/* Event hooks */
+nVarsEl.addEventListener('change', initUI);
+allowDcEl.addEventListener('change', () => { /* toggling enabling X state; existing Xs remain */ });
+sopBtn.addEventListener('click', simplifySOP);
+posBtn.addEventListener('click', simplifyPOS);
+clearBtn.addEventListener('click', () => { state.cells.fill(0); renderGrid(); clearResults(); });
+truthBtn.addEventListener('click', () => { renderTruthTable(); });
+
+/* init */
+initUI();
+
+/* ---- Example helpers: you can fill a demo quickly in console:
+   e.g., for 3 variables set minterms 1,3,5,7:
+   state.cells = state.idxToMin.map(m=> [0,1,2].includes(m) ? 0 : 0); // just default
+   To programatically set minterms: for each cell i, if idxToMin[i] in [1,3,5,7] set state.cells[i]=1; then renderGrid update cells.
+   For convenience we provide a demoFill function below (you can call via console or adapt UI).
+*/
+function demoFill(mintermList, allowX=false){
+  state.cells.fill(0);
+  for (let i=0;i<state.idxToMin.length;i++){
+    if (mintermList.includes(state.idxToMin[i])) state.cells[i]=1;
+    else state.cells[i]=0;
+  }
+  renderGrid();
+  // reflect new values
+  for (let i=0;i<state.idxToMin.length;i++){
+    const el = gridContainer.querySelector(`.cell[data-i='${i}']`);
+    if (el) updateCellDisplay(i, el);
+  }
+}
+</script>
+</body>
+</html>
